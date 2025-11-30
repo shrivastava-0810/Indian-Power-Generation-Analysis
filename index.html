@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Outage Dashboard — Filter by State (Persistent Selection)</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  :root{
+    --bg:#f6f8fb;
+    --card:#fff;
+    --muted:#666;
+    --shadow:0 2px 6px rgba(16,24,40,0.06);
+  }
+  body{font-family:system-ui,Segoe UI,Roboto,Arial; padding:18px; background:var(--bg); color:#111}
+  header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:14px}
+  h1{margin:0;font-size:20px}
+  #updated{color:var(--muted)}
+  .controls{margin-left:auto;display:flex;gap:10px;align-items:center}
+  select{padding:6px 8px;border-radius:6px;border:1px solid #ddd;background:#fff}
+
+  /* SECTION STYLE */
+  .section { margin-bottom: 26px; }
+  .section-title{ font-weight:900; margin-bottom:10px; font-size:17px; display:flex; align-items:center; gap:10px; }
+  .badge{ padding:6px 12px; border-radius:6px; color:#fff; font-size:13px; font-weight:700; }
+  .urgent-badge{ background:#ff4d4d }
+  .moderate-badge{ background:#ff9f3b }
+  .smooth-badge{ background:#2ec36b }
+
+  /* CARDS IN HORIZONTAL ROWS */
+  .row { display:flex; flex-wrap:wrap; gap:12px; }
+  .item{ background:var(--card); border-radius:8px; padding:10px; box-shadow:var(--shadow); min-width:240px; display:flex; gap:12px; align-items:center; }
+
+  /* Bottle */
+  .bottle{ width:38px; height:110px; border-radius:8px; background:#eef3fb; position:relative; overflow:hidden; border:1px solid rgba(0,0,0,.06); display:flex; align-items:flex-end; }
+  .fill{ width:100%; transition:height .5s ease; }
+  .fill.smooth{ background:linear-gradient(180deg,#7be495,#2ec36b) }
+  .fill.moderate{ background:linear-gradient(180deg,#ffd27a,#ff9f3b) }
+  .fill.urgent{ background:linear-gradient(180deg,#ff9a9a,#ff4d4d) }
+  .pct{ position:absolute; left:50%; transform:translateX(-50%); bottom:-16px; font-weight:800; font-size:12px; }
+
+  .meta{ flex:1; min-width:0 }
+  .name{ font-weight:900; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+  .sub{ font-size:12px; color:var(--muted); margin-top:4px }
+  .nums{ font-size:12px; color:#333; margin-top:6px }
+  .empty{ color:#666; padding:12px; background:white; border-radius:8px; box-shadow:var(--shadow); }
+
+  footer{ margin-top:20px; color:var(--muted); font-size:13px }
+  @media (max-width:760px){ .item{ min-width:170px } .controls{ width:100%; justify-content:flex-start } }
+</style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Outage Dashboard</h1>
+      <div id="updated">Last update: —</div>
+    </div>
+
+    <div class="controls">
+      <label for="stateFilter" style="font-size:13px;color:var(--muted)">State:</label>
+      <select id="stateFilter">
+        <option value="__ALL__">All India</option>
+      </select>
+    </div>
+  </header>
+
+  <!-- URGENT -->
+  <div class="section">
+    <div class="section-title">
+      <span class="badge urgent-badge">URGENT</span>
+      High outage (≥ 40%)
+    </div>
+    <div class="row" id="urgent-list"></div>
+    <div class="empty" id="urgent-empty" style="display:none">No stations to display</div>
+  </div>
+
+  <!-- MODERATE -->
+  <div class="section">
+    <div class="section-title">
+      <span class="badge moderate-badge">MODERATE</span>
+      Moderate outage (10–39%)
+    </div>
+    <div class="row" id="moderate-list"></div>
+    <div class="empty" id="moderate-empty" style="display:none">No stations to display</div>
+  </div>
+
+  <!-- SMOOTH -->
+  <div class="section">
+    <div class="section-title">
+      <span class="badge smooth-badge">SMOOTH</span>
+      Low outage (< 10%)
+    </div>
+    <div class="row" id="smooth-list"></div>
+    <div class="empty" id="smooth-empty" style="display:none">No stations to display</div>
+  </div>
+
+  <footer>Auto-updates every 3s</footer>
+
+<script>
+/* ---------- CONFIG ---------- */
+const JSON_FILE = 'latest_events.json';
+const POLL_MS = 1000;
+const STATE_STORAGE_KEY = 'outage_dashboard_selected_state';
+
+let lastUpdate = null;
+let allStations = {};
+const stateSelect = document.getElementById('stateFilter');
+
+/* ---------- HELPERS ---------- */
+function normalizePct(raw){
+  if (raw === null || raw === undefined) return 0;
+  const num = Number(raw);
+  if (isNaN(num)) return 0;
+  return Math.max(0, Math.min(100, num));
+}
+function classify(p){ if (p >= 40) return 'urgent'; if (p >= 10) return 'moderate'; return 'smooth'; }
+
+/* ---------- UI CARD ---------- */
+function makeCard(obj){
+  const station = (obj.power_station || "UNKNOWN").toUpperCase();
+  const state = obj.state_name || '';
+  const monitored = obj.monitored_capacity ?? 0;
+  const outage = obj.cap_under_outage ?? 0;
+  const rawPct = obj.pct_outage ?? (monitored ? outage/monitored*100 : 0);
+  const pct = normalizePct(rawPct);
+  const cls = classify(pct);
+
+  const div = document.createElement('div');
+  div.className = 'item';
+
+  const bottle = document.createElement('div');
+  bottle.className = 'bottle';
+  const fill = document.createElement('div');
+  fill.className = 'fill ' + cls;
+  fill.style.height = pct + "%";
+  bottle.appendChild(fill);
+
+  const pctEl = document.createElement('div');
+  pctEl.className = 'pct';
+  pctEl.textContent = Math.round(pct*10)/10 + "%";
+  bottle.appendChild(pctEl);
+
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+
+  const name = document.createElement('div');
+  name.className = 'name';
+  name.textContent = station;
+
+  const sub = document.createElement('div');
+  sub.className = 'sub';
+  sub.textContent = state;
+
+  const nums = document.createElement('div');
+  nums.className = 'nums';
+  nums.textContent = `Outage: ${outage} / ${monitored}`;
+
+  meta.appendChild(name);
+  meta.appendChild(sub);
+  meta.appendChild(nums);
+
+  div.appendChild(bottle);
+  div.appendChild(meta);
+  return {div, cls};
+}
+
+/* ---------- DROPDOWN ---------- */
+function populateStateDropdown(stationsObj){
+  const previousSelection = stateSelect.value || localStorage.getItem(STATE_STORAGE_KEY) || '__ALL__';
+
+  const seen = new Set();
+  Object.values(stationsObj).forEach(s => {
+    const st = (s.state_name || '').trim();
+    if (st) seen.add(st);
+  });
+
+  const states = Array.from(seen).sort();
+
+  while (stateSelect.options.length > 1) stateSelect.remove(1);
+
+  for (const st of states){
+    const op = document.createElement('option');
+    op.value = st;
+    op.textContent = st;
+    stateSelect.appendChild(op);
+  }
+
+  const stored = localStorage.getItem(STATE_STORAGE_KEY);
+  const toRestore = (previousSelection === "__ALL__" || states.includes(previousSelection))
+                    ? previousSelection
+                    : (stored && (stored === "__ALL__" || states.includes(stored)) ? stored : "__ALL__");
+
+  stateSelect.value = toRestore;
+}
+
+/* ---------- FILTER ---------- */
+function stationMatchesFilter(st, selected){
+  if (!selected || selected === "__ALL__") return true;
+  return (st.state_name || '').trim().toLowerCase() === selected.toLowerCase();
+}
+
+/* ---------- RENDER FROM CACHE ---------- */
+function renderFromCache(){
+  const selected = stateSelect.value || "__ALL__";
+  localStorage.setItem(STATE_STORAGE_KEY, selected);
+
+  const arr = Object.values(allStations).filter(s => stationMatchesFilter(s, selected));
+
+  // sort by outage % descending
+  arr.sort((a,b) => normalizePct(b.pct_outage ?? (b.cap_under_outage/b.monitored_capacity*100||0))
+                   - normalizePct(a.pct_outage ?? (a.cap_under_outage/a.monitored_capacity*100||0)));
+
+  // lists
+  const urgent = document.getElementById('urgent-list');
+  const moderate = document.getElementById('moderate-list');
+  const smooth = document.getElementById('smooth-list');
+
+  // empty message divs
+  const urgentEmpty = document.getElementById('urgent-empty');
+  const moderateEmpty = document.getElementById('moderate-empty');
+  const smoothEmpty = document.getElementById('smooth-empty');
+
+  urgent.innerHTML = ''; moderate.innerHTML = ''; smooth.innerHTML = '';
+  urgentEmpty.style.display = 'none';
+  moderateEmpty.style.display = 'none';
+  smoothEmpty.style.display = 'none';
+
+  let hasUrgent = false, hasModerate = false, hasSmooth = false;
+
+  for (const s of arr){
+    const {div, cls} = makeCard(s);
+    if (cls === 'urgent'){ urgent.appendChild(div); hasUrgent = true; }
+    else if (cls === 'moderate'){ moderate.appendChild(div); hasModerate = true; }
+    else { smooth.appendChild(div); hasSmooth = true; }
+  }
+
+  if (!hasUrgent) urgentEmpty.style.display = 'block';
+  if (!hasModerate) moderateEmpty.style.display = 'block';
+  if (!hasSmooth) smoothEmpty.style.display = 'block';
+}
+
+/* ---------- FETCH + RENDER ---------- */
+async function fetchAndRender(){
+  try{
+    const r = await fetch(JSON_FILE + "?t=" + Date.now(), {cache:'no-store'});
+    if(!r.ok) return;
+
+    const data = await r.json();
+    if(!data) return;
+
+    if (data.last_update === lastUpdate) return;
+
+    lastUpdate = data.last_update || Date.now();
+    document.getElementById('updated').textContent = "Last update: " + lastUpdate;
+
+    allStations = data.stations || {};
+    populateStateDropdown(allStations);
+    renderFromCache();
+
+  }catch(err){
+    console.error("fetch/render error", err);
+  }
+}
+
+/* ---------- EVENTS & POLLING ---------- */
+stateSelect.addEventListener('change', () => {
+  renderFromCache();
+  fetchAndRender();
+});
+
+setInterval(fetchAndRender, POLL_MS);
+fetchAndRender();
+</script>
+</body>
+</html>
