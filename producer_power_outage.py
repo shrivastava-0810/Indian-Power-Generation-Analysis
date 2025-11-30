@@ -1,4 +1,3 @@
-# producer.py
 import json
 import time
 import pandas as pd
@@ -6,7 +5,6 @@ from datetime import datetime, timezone
 from kafka import KafkaProducer
 import os
 
-# -------- CONFIG ----------
 KAFKA_BROKER = "localhost:9092"
 TOPIC = "telemetry"
 
@@ -15,29 +13,24 @@ SLEEP_SECONDS = 3
 REPLAY = False
 WRITE_FALLBACK = True
 
-# --------- helper ----------
 def to_iso(dt):
     if pd.isna(dt):
         return None
 
     if isinstance(dt, str):
         dt = dt.strip()
-
-        # Try strict ISO-like formats (YYYY-MM-DD, YYYY/MM/DD, etc.)
         for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d"):
             try:
                 return datetime.strptime(dt, fmt).isoformat()
             except:
                 pass
 
-        # Try DD-MM-YYYY only if unambiguous
         for fmt in ("%d-%m-%Y", "%d/%m/%Y"):
             try:
                 return datetime.strptime(dt, fmt).isoformat()
             except:
                 pass
 
-        # Fallback: let pandas decide without dayfirst warning
         try:
             return pd.to_datetime(dt, dayfirst=False).isoformat()
         except:
@@ -48,7 +41,6 @@ def to_iso(dt):
 
     return str(dt)
 
-# --------- producer init ----------
 def init_producer(broker_uri):
     try:
         p = KafkaProducer(
@@ -56,13 +48,11 @@ def init_producer(broker_uri):
             value_serializer=lambda v: json.dumps(v).encode('utf-8'),
             linger_ms=10
         )
-        # quick test send? optional
         return p
     except Exception as e:
         print(f"[WARN] Kafka producer init failed: {e}")
         return None
 
-# --------- send single event ----------
 def send_event(producer, topic, event, fallback_dir=None):
     if producer:
         try:
@@ -75,7 +65,6 @@ def send_event(producer, topic, event, fallback_dir=None):
             print(f"[ERROR] send to Kafka failed: {e}")
             producer.close()
             return False
-    # fallback: write JSON file
     if fallback_dir:
         os.makedirs(fallback_dir, exist_ok=True)
         fname = os.path.join(fallback_dir, f"evt_{int(time.time()*1000)}_{event.get('id','x')}.json")
@@ -85,12 +74,10 @@ def send_event(producer, topic, event, fallback_dir=None):
         return True
     return False
 
-# --------- main flow ----------
 def main(csv_path, broker, topic, delay, replay, fallback_dir):
     df = pd.read_csv(csv_path, dtype=str).fillna("")
     print('read')
 
-    # initialize kafka producer (may be None if broker down)
     producer = init_producer(broker)
     if producer is None:
         print("[WARN] Kafka producer not initialized — will use fallback file writes if enabled.")
@@ -103,7 +90,6 @@ def main(csv_path, broker, topic, delay, replay, fallback_dir):
         while True:
             for idx, row in df.iterrows():
                 event = {
-                    # prefer outage_date if present otherwise current time
                     "ts": datetime.now(timezone.utc).isoformat(),
                     "state_name": row.get("state_name") or row.get("state_nam",""),
                     "state_code": row.get("state_code", ""),
@@ -113,7 +99,6 @@ def main(csv_path, broker, topic, delay, replay, fallback_dir):
                 }
 
                 ok = send_event(producer, topic, event, fallback_dir=fallback_dir)
-                # if kafka failed and fallback not enabled, we skip but continue
                 time.sleep(delay)
 
             if not loop:
@@ -133,15 +118,12 @@ def try_float(x):
             return None
         return float(x)
     except Exception:
-        # remove commas and try again
         try:
             return float(str(x).replace(",", ""))
         except Exception:
             return None
 
-# -------- CLI ----------
 if __name__ == "__main__":
-    # no arguments; use defaults
     fallback_dir = "outbox" if WRITE_FALLBACK else None
 
     main(
